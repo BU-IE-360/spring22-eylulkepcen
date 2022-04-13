@@ -243,7 +243,7 @@ As a result, the answer to my research question is: **Yes, three data sets are p
 
 ### **Appendices**
 
-You can find my R code [here](), data set file [here](),and the .Rmd file [here]().
+You can find my R code [here](https://github.com/BU-IE-360/spring22-eylulkepcen/blob/gh-pages/Homework1.R),and the .Rmd file [here](https://github.com/BU-IE-360/spring22-eylulkepcen/edit/gh-pages/Homework1.Rmd).
 
 
 
