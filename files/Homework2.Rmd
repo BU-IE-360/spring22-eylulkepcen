@@ -1,0 +1,249 @@
+---
+title: "**IE360 Homework2**"
+author: "*Eylul Kepcen*"
+date: "*May 11th, 2022*"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+In this assignment, the data of unleaded gasoline sales (2000-2006) is fitted using linear regression. To produce a meaningful and trustworthy model, different models are tested and independent variables are added. After producing the final model, sales predictions for all quarters of 2007 are made.
+
+### **Introduction**
+Unleaded gasoline sales may be affected from different factors over time and by considering those potential factors, we may create a model to explain the quarterly behavior of UGS. We may try constructing various models by using linear regression and comment on their statistical properties to decide on the best one among others.
+
+### **Reading the data**
+Required libraries are added and the data file (.csv) is read using the read.csv function.
+```{r,warning=FALSE,error=FALSE,message=FALSE}
+library(xts)
+library(lubridate)
+library(forecast)
+library(tseries)
+library(urca)
+library(ggplot2)
+library(zoo)
+
+data <- read.csv("C:\\Users\\eylulkepcen\\OneDrive\\Masaüstü\\bogazici\\ie360\\Homework2\\IE360_Spring22_HW2_data.csv")
+```
+
+### **Linear Regression Model**
+After reading the data from the .csv file, some manipulations are made. Column names are edited for good readability and aesthetic, and the data that we want to forecast is transformed to a time series data to be plotted. 
+
+```{r,warning=FALSE,error=FALSE,message=FALSE}
+data$Quarter <- as.yearqtr(data$Quarter, format = "%Y_Q%q")
+colnames(data) <- c("Quarter","UGS","RNUV","NLPG","PU","PG","NUGV","NDGV","GNPA","GNPC","GNPT")
+data_new <- gsub(" ", "", data$UGS)                          
+data_new <- as.data.frame(data_new)
+colnames(data_new) <- c("UGS")
+data_final <- data.frame(data$Quarter, data_new)
+data_final$UGS <- as.numeric(data_final$UGS)
+data_final$data.Quarter <- as.yearqtr(data_final$data.Quarter, format = "%Y_Q%q")
+data_f_ts <- xts(x = data_final[-1], order.by = data_final$data.Quarter, frequency = 4)
+
+```
+
+UGS data from 2000 Q1 to 2006 Q4 is plotted as a time series graph We can now observe how it behaves over time and comment on its statistical properties.
+
+```{r, fig.align='center'}
+
+plot(data_f_ts,
+     main = "Unleaded gasoline sale vs. Time",
+     ylab = "Unleaded gasoline sale per Quarter",
+     xlab = "Time",
+     yaxis.right = FALSE,
+     minor.ticks = "quarters",
+     grid.ticks.on = "quarters",
+     grid.ticks.lty = 3)
+
+```
+Beginning from first quarter of 2000, *Unleaded Gasoline Sales* has a decreasing trend over years. Additional to the trend behavior, seasonality exists. Every year's third quarter has the maximum sales among the year. We should consider those trend and seasonality behaviors when constructing the model. Because of the seasonality and trend, we can say that data is **not stationary**. As an additional observation, we should say that mean of the data always decreases.
+
+After plotting the data, we can dice deep into its stationary properties via *tsdisplay* function. Moreover, its autocorrelation function is produced and Ljung Box test is conducted.
+```{r, fig.align='center'}
+tsdisplay(data_f_ts[1:28,],
+          main = "Unleaded gasoline sale",
+          xlab = "Unleaded gasoline sale")
+
+acf(data_f_ts[1:28,])
+```
+When analyzing the output of the *tsdisplay* function, we clearly see the decreasing trend and the seasonality as we mentioned earlier. Also ACF and PACF graphs are produced with the time series graph. We clearly see the high correlation at lag 4. It indicates a strong correlation between each value and the value occurring four quarters previously.
+```{r}
+Box.test(diff(data_f_ts), lag=10, type="Ljung-Box")
+
+```
+
+By looking at the output of Ljung Box Test, we decide that we should reject the null hypothesis assuming a 5% chance of making a mistake. So we assume that our data shows dependence on each other.
+
+Then, other given variables and UGS are gathered in a data frame and the data frame is transformed into a time series data after making some manipulations on it.
+```{r}
+
+data_final <- data.frame(data_final, data$RNUV, data$NLPG, data$PU, data$PG,data$NUGV,data$NDGV,data$GNPA, data$GNPC, data$GNPT)
+colnames(data_final) <- c("Quarter","UGS","RNUV","NLPG","PU","PG","NUGV","NDGV","GNPA","GNPC","GNPT")
+data_final$NLPG <- gsub(" ", "", data_final$NLPG)                          
+data_final$NLPG <- as.numeric(data_final$NLPG)
+
+data_final$NUGV <- gsub(" ", "", data_final$NUGV)                          
+data_final$NUGV <- as.numeric(data_final$NUGV)
+
+data_final$GNPA <- gsub(" ", "", data_final$GNPA)                          
+data_final$GNPA <- as.numeric(data_final$GNPA)
+
+data_final$GNPC <- gsub(" ", "", data_final$GNPC)                          
+data_final$GNPC <- as.numeric(data_final$GNPC)
+
+data_final$GNPT <- gsub(" ", "", data_final$GNPT)                          
+data_final$GNPT <- as.numeric(data_final$GNPT)
+
+data_final$Quarter <- as.yearqtr(data_final$Quarter, format = "%Y_Q%q")
+
+data_ts <- xts(x = data_final[-1], order.by = data_final$Quarter, frequency = 4)
+```
+To forecast the data in the most efficient way, we should add some variables such as trend and seasonality. Since we have quarterly data, we add a seasonality variable which is quarterly and we add a trend variable.
+
+After analyzing the data, we see that starting at the last quarter of year 2000, data has a misleading behavior. This behavior stems from Turkish Economic Crisis in 2001. Hence, this economic crisis should also be added to the model.   
+```{r, fig.align='center'}
+data_final$quarters <- rep(1:4, 8)
+data_final$trend <- 32:1
+data_final$crisis <- rep(0,32)
+data_final$crisis[4:6] <- rep(1,3)
+
+data_ts <- xts(x = data_final[-1], order.by = data_final$Quarter, frequency = 4)
+
+model <- lm(formula = UGS ~ as.factor(quarters) + trend + crisis, data = data_ts)
+summary(model)
+checkresiduals(model)
+```
+
+Our adjusted R squared value is 0.8921 which is not bad for the first try of a model. Significance of the coefficients can also be seen. We, then, dive deep into the model to decrease the residual error and improve the model.
+
+### **New Variables**
+Then, we can search for other variables. First I think that Unleaded Gasoline Sales may be affected by the USD/TRY Exchange rate, so let's look for its correlation with the residuals of the model.
+
+```{r, fig.align='center'}
+USD <- read.csv("C:\\Users\\eylulkepcen\\OneDrive\\Masaüstü\\bogazici\\ie360\\Homework2\\USD_TRY.csv")
+colnames(USD) <- c("USD")
+data_final <- data.frame(data_final, USD)
+plot(x = data_final$USD[1:28], y = model$residuals[1:28], col = "#FD6467",
+     main = "Residuals vs. USD TRY Exchange Rate",
+     xlab = "USD TRY Exchange Rate",
+     ylab = "Residuals")
+abline(h = 0, lty = 2)
+abline(h = 50000, lty = 3, col = "#FD6467")
+abline(h = -50000, lty = 3, col = "#FD6467")
+
+```
+
+Now we can see the correlation clearly, so USD/TRY Exchange rate should be added to the model since it will be beneficial for the improvement.
+
+```{r, fig.align='center'}
+data_ts <- xts(x = data_final[-1], order.by = data_final$Quarter, frequency = 4)
+model <- lm(formula = UGS ~ as.factor(quarters) + trend + crisis + USD , data = data_ts)
+summary(model)
+checkresiduals(model)
+
+```
+
+Our adjusted R squared has increased and residual error has decreased. These improvements are just like we have estimated and expected. As a result, model has improved thanks to the new USD/TRY variable.
+
+After adding USD/TRY Exchange Rate, now we can analyze the variables given. As a result, we may add a couple of them to improve the model and decrease the residual error. 
+
+There are nine independent variables apart from the UGS. They may have correlation with UGS and they may be affecting the sales. If so, we should add the ones correlated.
+
+One way to decide whether they are correlated or not is performing scatter plot analysis . Thus, scatter plots are plotted for each variable versus the residuals of the model. 
+
+Among all plots, three of them gives us the correlation which will be useful to add the model. These variables are PG, GNPC, and GNPA. When we add these variables to the model, it does really give us a better output, which we cannot observe when adding others to the model. 
+
+Here are the scatter plots of the three variables that are now added:
+```{r, fig.align='center'}
+
+plot(x = data_final$PG[1:28], y = model$residuals[1:28], col = "#FD6467",
+     main = "Residuals vs. PG",
+     xlab = "PG",
+     ylab = "Residuals")
+abline(h = 0, lty = 2)
+abline(h = 50000, lty = 3, col = "blue")
+abline(h = -50000, lty = 3, col = "blue")
+
+
+plot(x = data_final$GNPA[1:28], y = model$residuals[1:28], col = "#FD6467",
+     main = "Residuals vs. GNPA",
+     xlab = "GNPA",
+     ylab = "Residuals")
+abline(h = 0, lty = 2)
+abline(h = 50000, lty = 3, col = "blue")
+abline(h = -50000, lty = 3, col = "blue")
+
+
+plot(x = data_final$GNPC[1:28], y = model$residuals[1:28], col = "darkred",
+     main = "Residuals vs. GNPC",
+     xlab = "GNPC",
+     ylab = "Residuals")
+abline(h = 0, lty = 2)
+abline(h = 50000, lty = 3, col = "blue")
+abline(h = -50000, lty = 3, col = "blue")
+
+```
+
+Now we can produce the results for the improved model.
+
+```{r}
+model <- lm(formula = UGS ~ as.factor(quarters) + trend + crisis + USD + PG + GNPC + GNPA, data = data_ts)
+summary(model)
+checkresiduals(model)
+
+```
+
+Residual error has decreased to 31610 and adjusted R squared value has increased to 0.9562 just as we wanted. Now we have a better model with p-value of 0.09168 indicating that residuals are not auto correlated.
+Thanks to its high R squared value, we surely can say that it is a reliable model for predicting the number of unleaded gas sales each quarter.
+
+Then I want to add a residual lagged variable to improve the model more. It is four lagged and I don't know whether it will improve the model as expected. Thus, we test its performance.
+
+```{r, fig.align='center'}
+data_final$residual_lag4 <- c(0,0,0,0,model$residuals)
+data_ts <- xts(x = data_final[-1], order.by = data_final$Quarter, frequency = 4)
+
+model <- lm(formula = UGS ~ as.factor(quarters) + residual_lag4 + trend + crisis + USD + PG + GNPC + GNPA, data = data_ts)
+summary(model)
+checkresiduals(model)
+```
+
+Unfortunately, residual standard error has increased and adjusted R squared has decreased which is not the desired result. Therefore I decide not to include the lagged variable to the model and convert the model back to its previous form.
+
+### **Conclusion**
+
+Now the model has the final form telling us that we can generate a plot to observe the actual and predicted values and compare them with each other.
+
+```{r, fig.align='center'}
+model <- lm(formula = UGS ~ as.factor(quarters) + trend + crisis + USD + PG + GNPC + GNPA, data = data_ts)
+final <- xts(x = data.frame(data_final$UGS[1:32],predict(model, data_ts)), order.by = data_final$Quarter[1:32], frequency = 4)
+colnames(final) <- c("Real", "Predicted")
+plot(final,
+     legend.loc = "topright",
+     main = "Unleaded gasoline sale vs. Time",
+     minor.ticks = "quarters",
+     grid.ticks.on = "quarters",
+     yaxis.right = FALSE, col = c("#FD6467","black"),
+     grid.ticks.lty = 3)
+
+```
+
+The graph shows a good model with overlapping lines of predicted and the actual values between 2000 and 2006. Then we produce the predicted values for all quarters in 2007.
+```{r}
+final$Predicted[29:32]
+```
+
+As the final result of this study, predicted values are generated. It has high probability that 2007 sales will be similar to the values that our model has predicted.
+
+Outputs of the final model is also here the same as we have seen before:
+```{r}
+model <- lm(formula = UGS ~ as.factor(quarters) + trend + crisis + USD + PG + GNPC + GNPA, data = data_ts)
+summary(model)
+checkresiduals(model)
+```
+
+Our adjusted R value, residual standard error, and p-value satisfy us to select and use this model. After testing different types of models, we have improved and decided on the best model among others. Our p-value is higher than 0.05 showing us that residuals are not auto correlated.
+
+### **Appendices**
+
+You can find my R code [here](https://github.com/BU-IE-360/spring22-eylulkepcen/blob/gh-pages/files/Homework2.R), and .Rmd file [here](https://github.com/BU-IE-360/spring22-eylulkepcen/blob/gh-pages/files/Homework2.Rmd).
+
