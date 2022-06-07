@@ -9,3 +9,4 @@ You can find my linear regression study about unleaded gasoline sales [here](fil
 ### Homework 3
 
 ### Project
+You can find our linear regression modeling study about solar power production [here](files/Project.html).
