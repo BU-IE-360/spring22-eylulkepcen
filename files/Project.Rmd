@@ -1,0 +1,376 @@
+---
+title: "IE360 Project  Report"
+author: "*Group 2: Eylul Kepcen, Begum Tuzuner*"
+date: "*June 7th, 2022*"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+This project is about providing hourly solar power prediction of KIVANC 2 GES (Güneş Enerjisi
+Santrali) for the next day. KIVANC 2 GES is located in Mersin (between 36-37° north latitude and
+33-35° east longitude.) You may find the location of the power plant [here](https://earth.google.com/web/search/G%C3%BClnar,+Mersin/@36.53293553,33.25506549,1133.49566978a,3417.68721644d,35y,-10.21136707h,0.67542784t,0r/data=CigiJgokCbDmFAthQkNAEbdEevHBMENAGY72bhshJkBAIVzzZJJPBEBA).
+
+### **Introduction**
+
+The data provided for the prediction phase at each day in two files: production and weather. In production data, there are three columns: date, hour and production. Due to the nature of the data analytics, the obtained data contain two days before the predicted day, Which means, the predictions must be made for 72 hours later. 
+
+In weather data, there are six columns: date, hour, latitude, longitude, variable and value. Variable column contains the characteristics of the weather each day with a character based code. And next, value column indicates the value of the weather variable. With a very quick look, it can be said that these columns would have much effect as an independent variable in the model. 
+
+To produce a meaningful and trustworthy model, different models constructed based on the data provided. To decide which attributes have higher effect on the improvement on the model, tests are done and several distinct approaches has been developed. After producing the final model, solar power predictions from May 25th to June 3rd, 2022 are made.
+
+
+### **Reading the data**
+
+Required libraries are added and the data files (.csv) are read using the read.csv function.
+
+```{r,warning=FALSE,error=FALSE,message=FALSE}
+library(reshape)
+library(urca)
+library(xts)
+library(forecast)
+library(tidyverse)
+library(dplyr)
+library(padr) 
+library(data.table)
+library(TTR)
+weather_long <- read.csv("/Users/eylulkepcen/Downloads/weather.csv")
+production <- read.csv("/Users/eylulkepcen/Downloads/production.csv")
+
+```
+
+After reading the data mentioned in the Introduction part from .csv files, it is realized that some manipulations could be beneficial to implement the variables more clearly. Column names are edited for good readability and aesthetic. Date column is manipulated so that data set becomes ready to be transformed into time series format. Moreover, respective hour and month numbers are added to the data set as additional columns because they will be used when forecasting. 
+
+```{r,message=FALSE}
+weather_long$date <- as.Date(weather_long$date, "%Y-%m-%d")
+production$date <- as.Date(production$date, "%Y-%m-%d")
+weather_wide <- cast(weather_long, date + hour ~ variable + lat + lon, value.var = "value")
+weather_wide$date_hour <- paste(weather_wide$date, weather_wide$hour)
+weather_wide$date_hour <- paste( weather_wide$date_hour,"00", sep=":")
+weather_wide$date_hour <- paste( weather_wide$date_hour,"00", sep=":")
+weather_wide$date_hour <- gsub(" ", "-", weather_wide$date_hour)                          
+weather_wide$date_hour <- as.POSIXct(weather_wide$date_hour, format = "%Y-%m-%d-%H:%M:%S", origin ="2021-02-01 00:00:00",tz = "GMT")
+weather_wide <- weather_wide[,c(39,1:(38))]
+
+production$date_hour <- paste(production$date, production$hour)
+production$date_hour <- paste(production$date_hour,"00", sep=":")
+production$date_hour <- paste(production$date_hour,"00", sep=":")
+production$date_hour <- gsub(" ", "-", production$date_hour)                          
+production$date_hour <- as.POSIXct(production$date_hour, format = "%Y-%m-%d-%H:%M:%S", origin ="2021-02-01 00:00:00",tz = "GMT")
+production <- production[,c(4,1:(3))]
+production <- pad(production[,c(1,4)])
+production$hour <- format(as.POSIXct(production$date_hour), format = "%H")
+production$date <- format(as.POSIXct(production$date_hour), format = "%Y-%m-%d")
+production$month <- format(as.POSIXct(production$date_hour), format = "%m")
+production$hour <- as.numeric(production$hour)
+production$date <- as.Date(production$date)
+production$month <- as.numeric(production$month)
+
+new_dates <- weather_wide[((nrow(production)+1):nrow(weather_wide)),c(1,2,3)]
+new_df <- dplyr::tibble(new_dates, production = NA)
+
+production <- production[,-c(5)]
+production <- production[,c(1,4,3,2)]
+production <- rbind(production, new_df)
+production$month <- format(as.POSIXct(production$date_hour), format = "%m")
+production$month <- as.numeric(production$month)
+
+```
+
+Now, it is time to plot the data as well as its ACF and PACF functions. That provides us an insight to understand the characteristics of the time series data.
+
+```{r, fig.align='center'}
+production_ts <- xts(x = production[,c('production')], order.by = production$date_hour)
+colnames(production_ts) <- c("production")
+tsdisplay(production_ts)
+
+plot(production_ts$production,
+     main = "Hourly Solar Power Production",
+     ylab = "Production",
+     xlab = "Time",
+     yaxis.right = FALSE,
+     minor.ticks = "months",
+     grid.ticks.on = "months",
+     grid.ticks.lty = 3,
+     type = 'h')
+```
+
+After plotting the data, as expected, things should be done came to the light. First, besides observing its trend and seasonality, it has been realized that there are missing data on different days throughout the year. Those gaps should be filled.
+
+Afterwards, descending trend is added and data is converted to time series. To begin with the model implementation part, a base linear regression model is constructed  to be compared with the future models. In this base model, hour, month, and trend parameters are used.
+
+```{r, fig.align='center'}
+production$trend <- nrow(production):1
+production_ts <- xts(x = production[,c('hour','production','month','trend')], order.by = production$date_hour, 24)
+
+model <- lm(formula = production ~ as.factor(hour) + as.factor(month) + trend, data = production_ts)
+summary(model)
+checkresiduals(model)
+
+```
+
+The very first adjusted R squared value is 0.7836. From now on, increasing this number by improving the model without losing the reliability is the ultimate aim. Also residuals will be checked after constructing every model.
+
+### **New Variables**
+
+In next step, weather variables at power plant's coordinates (36.5°N, 33.25°E) are added. These variables consist of:
+
++ *CLOUD_LOW_LAYER*: Total cloud cover data for low-level type of clouds 
++ *DSWRF*: Downward shortwave radiation flux
++ *REL_HUMIDITY*: Relative humidity
++ *TEMP*: Temperature
+
+After adding weather parameters, new model is constructed.
+
+```{r,message=FALSE, fig.align='center'}
+production <- data.frame(production, weather_wide[,c(8,17,26,35)])
+production_ts <- xts(x = production[,c(3:10)], order.by = production$date_hour)
+model <- lm(formula = production ~ as.factor(hour) + as.factor(month)+trend+CLOUD_LOW_LAYER_36.5_33.25+DSWRF_36.5_33.25+REL_HUMIDITY_36.5_33.25+TEMP_36.5_33.25, data = production_ts)
+summary(model)
+checkresiduals(model)
+```
+
+This model has an adjusted R squared value of 0.8258 which is higher than the previous model, as expected.
+
+### **Detecting and Completing Missing Data**
+
+When the data is plotted, there seems some missing points. Now, the missing data will be searched  and be filled  by linear regression models. By using which(is.na) functions, it can seen where missing data from:
+
++ Feb 20, 2021
++ August 9-10-11, 2022
++ January 13-14, 2022
+
+So, three different monthly linear regression models are constructed to predict those dates' data.
+
+```{r,message=FALSE,results = FALSE}
+
+is.na(production$production) 
+which(is.na(production$production))
+
+
+#Completing missing data in February 2021
+production$production[457:464]<- 0
+production$production[475:480]<- 0
+
+production_ts <- xts(x = production[,c(3:10)], order.by = production$date_hour)
+
+model_deneme <- lm(production_ts$production[1:672]~   
+                     as.factor(production_ts$hour[1:672])  +
+                     production_ts$CLOUD_LOW_LAYER_36.5_33.25[1:672]+
+                     production_ts$DSWRF_36.5_33.25[1:672]+
+                     production_ts$REL_HUMIDITY_36.5_33.25[1:672]+ 
+                     production_ts$TEMP_36.5_33.25[1:672],
+                   data = production_ts[1:672])
+#summary(model_deneme)
+predict <- predict(object=model_deneme, newdata = production_ts[457:480])
+predict <- data.frame(production$date_hour[1:672],predict)
+feb_pred <- xts(x = data.frame(production$production[1:672],predict$predict), order.by = production$date_hour[1:672])
+colnames(feb_pred) <- c("Real", "Predicted")
+#plot(feb_pred,legend.loc = "topright",main = "Solar Power Production in February 2021",minor.ticks = "quarters",grid.ticks.on = "quarters",yaxis.right = FALSE, col = c("#FD6467","black"),grid.ticks.lty = 3)
+production$production[465:474]<- predict$predict[465:474]
+
+#Completing missing data in August 2021
+production$production[4537:4542]<- 0
+production$production[4557:4566]<- 0
+production$production[4581:4590]<- 0
+production$production[4605:4608]<- 0
+production_ts <- xts(x = production[,c(3:10)], order.by = production$date_hour)
+
+model_deneme <- lm(production_ts$production[4345:5088]~   
+                     as.factor(production_ts$hour[4345:5088])  +
+                     production_ts$CLOUD_LOW_LAYER_36.5_33.25[4345:5088]+
+                     production_ts$DSWRF_36.5_33.25[4345:5088]+
+                     production_ts$REL_HUMIDITY_36.5_33.25[4345:5088]+ 
+                     production_ts$TEMP_36.5_33.25[4345:5088],
+                   data = production_ts[4345:5088])
+#summary(model_deneme)
+predict <- predict(object=model_deneme, newdata = production_ts[4537:4608])
+predict <- data.frame(production$date_hour[4345:5088],predict)
+august_pred <- xts(x = data.frame(production$production[4345:5088],predict$predict), order.by = production$date_hour[4345:5088])
+colnames(august_pred) <- c("Real", "Predicted")
+# plot(august_pred,
+#      legend.loc = "topright",
+#      main = "Solar Power Production in August 2021",
+#      minor.ticks = "quarters",
+#      grid.ticks.on = "quarters",
+#      yaxis.right = FALSE, col = c("#FD6467","black"),
+#      grid.ticks.lty = 3)
+production$production[4543:4556]<- predict$predict[199:212]
+production$production[4567:4580]<- predict$predict[223:236]
+production$production[4591:4604]<- predict$predict[247:260]
+
+
+#Completing missing data in January 2022
+production$production[8305:8312]<- 0
+production$production[8323:8336]<- 0
+production$production[8347:8352]<- 0
+production_ts <- xts(x = production[,c(3:10)], order.by = production$date_hour)
+
+model_deneme <- lm(production_ts$production[8017:8760]~   
+                     as.factor(production_ts$hour[8017:8760])  +
+                     production_ts$CLOUD_LOW_LAYER_36.5_33.25[8017:8760]+
+                     production_ts$DSWRF_36.5_33.25[8017:8760]+
+                     production_ts$REL_HUMIDITY_36.5_33.25[8017:8760]+ 
+                     production_ts$TEMP_36.5_33.25[8017:8760],
+                   data = production_ts[8017:8760])
+#summary(model_deneme)
+
+predict <- predict(object=model_deneme, newdata = production_ts[8017:8760])
+predict <- data.frame(production$date_hour[8017:8760],predict)
+jan_pred <- xts(x = data.frame(production$production[8017:8760],predict$predict), order.by = production$date_hour[8017:8760])
+colnames(jan_pred) <- c("Real", "Predicted")
+# plot(jan_pred,
+#      legend.loc = "topright",
+#      main = "Solar Power Production in January 2022",
+#      minor.ticks = "quarters",
+#      grid.ticks.on = "quarters",
+#      yaxis.right = FALSE, col = c("#FD6467","black"),
+#      grid.ticks.lty = 3)
+production$production[8313:8322]<- predict$predict[297:306]
+production$production[8337:8346]<- predict$predict[321:330]
+
+production[production<0]<- 0
+```
+
+Since data is completed now, a new model can be constructed. 
+
+```{r, fig.align='center'}
+
+model <- lm(formula = production ~ as.factor(hour) + as.factor(month)+trend+CLOUD_LOW_LAYER_36.5_33.25+DSWRF_36.5_33.25+REL_HUMIDITY_36.5_33.25+TEMP_36.5_33.25, data = production_ts)
+summary(model)
+#checkresiduals(model)
+
+production_ts <- xts(x = production[,c(3:10)], order.by = production$date_hour, frequency = 24)
+final <- xts(x = data.frame(production$production,predict(model, production_ts)), order.by = production$date_hour, frequency = 24)
+colnames(final) <- c("Real", "Predicted")
+
+# plot(final,
+#      legend.loc = "topright",
+#      main = "Solar Power Production vs. Time",
+#      minor.ticks = "quarters",
+#      grid.ticks.on = "quarters",
+#      yaxis.right = FALSE, col = c("#FD6467","black"),
+#      grid.ticks.lty = 3)
+
+```
+
+New adjusted R squared value is 0.8264 which is way better than before. This means the model is improving in every step. Also it can be observed that each parameter type has high importance on model output.
+
+### **Monthly Trend and Lags**
+
+In our next step, we add monthly trend values with averaging all values within a month. While considering the lag values the very first thing is creating the lags starting from lag72. Since we need to predict 3 days after our last real data, we cannot work with a lag value smaller than 72.
+
+To decide other lags of the production values, KPSS test is applied. As a result, there appears lag of 12. By using this, differ variable is created with differencing the actual value by the 12 value before.  
+
+```{r}
+ur_kpss = ur.kpss(production_ts$production) 
+summary(ur_kpss)
+production_ts = data.table(production_ts)
+production_ts[,differ:=production-shift(production,12)]
+ur_kpss=ur.kpss(production_ts$differ) 
+summary(ur_kpss)
+```
+
+Although that could give a perfect fit on the data, since there is a gap of 72 hours, differ cannot be used for the prediction purpose. From this point of view, heuristically, we thought that each day could be dependent on the day before, which means lag of 24. So we added lag values starting from 72 to 1440 increasing by 24.
+
+In the following final model, we also add some model inputs not in an additive but in a multiplicative form so that we will make use of pairs of parameters that are related, therefore we will come up with a more improved model.
+
+```{r,warning=FALSE,results=FALSE}
+production$monthly_trend <- production$production
+production$monthly_trend[1:672] <-(sum(production$production[1:672]/28))
+production$monthly_trend[673:1416] <-(4146.556/31)
+production$monthly_trend[1417:2136] <-(6085.955/30)
+production$monthly_trend[2137:2880] <-(9437.120/31)
+production$monthly_trend[2881:3600] <-(11001.904/30)
+production$monthly_trend[3601:4344] <-(12182.799/31)
+production$monthly_trend[4345:5088] <-(11897.100/31)
+production$monthly_trend[5089:5808] <-(10351.786/30)
+production$monthly_trend[5809:6552] <-(9270.799/31)
+production$monthly_trend[6553:7272] <-(6098.576/30)
+production$monthly_trend[7273:8016] <-(3854.962/31)
+production$monthly_trend[8017:8760] <-(4657.830/31)
+production$monthly_trend[8761:9432] <-(5582.57/28)
+production$monthly_trend[9433:10176] <-(7707.24/31)
+production$monthly_trend[10177:10896] <-(9420.35/30)
+production$monthly_trend[10897:11760] <-(9405.97/31)
+
+lags <- seq(72,1440,by=24)
+lag_names <- paste("lag", formatC(lags, width = nchar(max(lags)), flag = "0"), 
+                   sep = "_")
+lag_functions <- setNames(paste("dplyr::lag(., ", lags, ")"), lag_names)
+
+production <- production %>% mutate_at(vars(production), funs_(lag_functions))
+
+production_ts <- xts(x = production[,c(3:ncol(production))], order.by = production$date_hour, frequency = 24)
+
+model <- lm(production_ts$production~as.factor(production_ts$hour)*production_ts$DSWRF_36.5_33.25+as.factor(production_ts$month)*production_ts$TEMP_36.5_33.25
+            +as.factor(production_ts$month)*production_ts$CLOUD_LOW_LAYER_36.5_33.25+as.factor(production_ts$month)*production_ts$DSWRF_36.5_33.25
+              +production_ts$trend+as.factor(production_ts$hour)*production_ts$CLOUD_LOW_LAYER_36.5_33.25+as.factor(production_ts$hour)+
+              production_ts$monthly_trend*production_ts$DSWRF_36.5_33.25 +production_ts$monthly_trend*production_ts$TEMP_36.5_33.25+as.factor(production_ts$month)*production_ts$REL_HUMIDITY_36.5_33.25
+            +lag_0072+lag_0096+lag_0120+lag_0600
+            +lag_0168+lag_0192+lag_0216+lag_0384+lag_0600
+            +lag_0288+lag_0312+lag_0336
+            +lag_0360+lag_0432+lag_0456
+            +lag_0480+lag_0528+lag_0552+lag_0576
+            +lag_0648+lag_0672
+            +lag_0720+lag_0744+lag_0816
+            +lag_0864+lag_0888+lag_0912+lag_0936
+            +lag_0960+lag_0984+lag_1032+lag_1128+lag_1176
+            +lag_1200+lag_1224+lag_1248+lag_0768+lag_1272
+            , data = production_ts)
+summary(model)
+#checkresiduals(model)
+```
+
+As the output of our new and final model, it can be seen that:
+
+"*Residual standard error: 3.915 on 10302 degrees of freedom*
+
+*(1440 observations deleted due to missingness)*
+
+*Multiple R-squared:  0.932,  Adjusted R-squared:  0.931 *
+
+*F-statistic: 877.7 on 161 and 10302 DF,  p-value: < 2.2e-16*"
+
+Adjusted R squared value has a high increase that it went from 0.8264 to 0.931.
+
+```{r, fig.align='center',warning=FALSE}
+
+final <- xts(x = data.frame(production$production[1:nrow(production)],predict(model, production_ts)), order.by = production$date_hour[1:nrow(production)],frequency=24)
+colnames(final) <- c("Real", "Predicted")
+plot(final,
+     legend.loc = "topright",
+     main = "Solar Power Production vs. Time",
+     minor.ticks = "quarters",
+     grid.ticks.on = "quarters",
+     yaxis.right = FALSE, col = c("#FD6467","black"),
+     grid.ticks.lty = 3)
+
+```
+
+Predicted production data is printed:
+
+```{r,warning=FALSE}
+final$Predicted[11689:11712]
+
+paste("",as.character(final$Predicted[11689:11712]),"",collapse=", ",sep="")
+```
+
+Of course, when there is no sunlight - at nights -, the solar panels cannot produce any electricity. However, the predictions contain both negative and positive non-zero values. They are not so different than zero and even as.factor(hour) could not help to set these values to zero. This result is what we can expect, though. Because we work in a continuous interval rather than discrete, these values can be fluctuate. For a basic and easy solution, the predictions can be set 0 (and so close to it) or round up/down. 
+
+### **Conclusion**
+
+To conclude, there are several possible ways to predict the production of KIVANC 2 GES. The only thing matters is to find an appropriate and applicable method to develop a model. The procedure mentioned above, of course, can be made via ARIMA models. However, the reason we prefer linear models is observing each and every change in the model in explicit form. 
+
+Lastly, the last predictions obtained are the results of the model with 93.1% reliability which can obviously give good results. It is adequate for now, but it should be worth to mention that the model is open to improvement. 
+
+### **References**
+
+[Kıvanç Enerji](https://www.kivancenerji.com.tr/kivanc2ges.html)
+
+[Enerji Atlası](https://www.enerjiatlasi.com/gunes/kivanc-2-ges.html)
+
+### **Appendices**
+
+You can find the R code [here](https://github.com/BU-IE-360/spring22-eylulkepcen/blob/gh-pages/files/Project.R), and .Rmd file [here](https://github.com/BU-IE-360/spring22-eylulkepcen/blob/gh-pages/files/Project.Rmd).
+
